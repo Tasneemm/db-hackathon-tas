@@ -26,7 +26,7 @@ export SERVICE_ACCOUNT_EMAIL="${SERVICE_NAME}@${PROJECT_ID}.iam.gserviceaccount.
 # --- Script ---
 
 echo "Enabling required Google Cloud services..."
-gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com iam.googleapis.com
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com iam.googleapis.com aiplatform.googleapis.com secretmanager.googleapis.com
 
 echo "Creating Artifact Registry repository..."
 gcloud artifacts repositories create "${REPO_NAME}" \
@@ -40,6 +40,11 @@ gcloud iam service-accounts create ${SERVICE_NAME} \
 
 echo "Creating GCS bucket if it doesn't exist..."
 gcloud storage buckets create "gs://${GCS_BUCKET_NAME}" --project="${PROJECT_ID}" --location="${REGION}" --uniform-bucket-level-access || echo "Bucket 'gs://${GCS_BUCKET_NAME}' already exists or you lack permissions."
+
+echo "Granting service account access to secrets..."
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:${SERVICE_ACCOUNT_EMAIL}" \
+    --role="roles/secretmanager.secretAccessor" || echo "Secret accessor role already granted or failed."
 
 echo "Granting GCS bucket permissions..."
 gcloud storage buckets add-iam-policy-binding "gs://${GCS_BUCKET_NAME}" \

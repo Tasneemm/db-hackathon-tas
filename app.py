@@ -274,23 +274,43 @@ def generate_llm_json(prompt: str, articles: List[Dict[str, Any]]) -> str:
 def run_pipeline() -> Dict[str, Any]:
     html = fetch_homepage()
     articles = parse_articles(html)
-    payload = create_raw_payload(articles)
-    raw_uri = upload_to_gcs(payload, "raw")
+    raw_payload = create_raw_payload(articles)
+    raw_uri = upload_to_gcs(raw_payload, "raw")
 
-    prompt = build_prompt(articles)
-    print(prompt)
-    llm_response = generate_llm_json(prompt, articles)
-    result = normalize_llm_output(llm_response)
+    processed_results = []
+    print(f"Found {len(articles)} articles to process.")
+    for article in articles:
+        print(f"-> Processing article: {article.get('title')}")
+        # Build a prompt for each individual article
+        prompt = build_prompt([article])
+        llm_response = generate_llm_json(prompt, [article])
 
-    output_payload = {"source": BASE_URL, "fetched_at": payload["fetched_at"], **result}
+        try:
+            # Normalize and store the structured output
+            processed_article = normalize_llm_output(llm_response)
+            processed_article['original_article'] = {
+                'title': article.get('title'),
+                'link': article.get('link')
+            }
+            processed_results.append(processed_article)
+        except json.JSONDecodeError as e:
+            print(f"  [ERROR] Failed to decode LLM output for article: {article.get('link')}. Details: {e}")
+            processed_results.append({
+                'error': 'Failed to process article, LLM output was not valid JSON.',
+                'original_article': {'title': article.get('title'), 'link': article.get('link')},
+                'llm_response': llm_response
+            })
+
+    final_result = {"processed_articles": processed_results}
+    output_payload = {"source": BASE_URL, "fetched_at": raw_payload["fetched_at"], **final_result}
     output_uri = upload_to_gcs(output_payload, "output")
 
     if raw_uri or output_uri:
-        result["cloud_storage"] = {
+        final_result["cloud_storage"] = {
             "raw": raw_uri,
             "output": output_uri,
         }
-    return result
+    return final_result
 
 
 if __name__ == "__main__":
