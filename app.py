@@ -18,9 +18,10 @@ except Exception:  # pragma: no cover - optional dependency
     storage = None
 
 try:
-    import google.generativeai as genai
+    import vertexai
+    from vertexai.generative_models import GenerativeModel
 except Exception:  # pragma: no cover - optional dependency
-    genai = None
+    vertexai = None
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
@@ -32,7 +33,7 @@ GCS_BUCKET = os.getenv("GCS_BUCKET")
 GCS_PREFIX = os.getenv("GCS_PREFIX", "ai-act-data")
 GCP_PROJECT = os.getenv("GCP_PROJECT")
 GCP_LOCATION = os.getenv("GCP_LOCATION", "us-central1")
-GCP_MODEL = os.getenv("GCP_MODEL", "gemini-2.0-flash-001")
+GCP_MODEL = os.getenv("GCP_MODEL", "gemini-1.5-flash-001")
 
 
 def fetch_homepage() -> str:
@@ -237,19 +238,23 @@ def normalize_llm_output(raw_output: str) -> Dict[str, Any]:
 
 
 def generate_llm_json(prompt: str, articles: List[Dict[str, Any]]) -> str:
-    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS") and genai is not None and GCP_PROJECT:
-        genai.configure(project=GCP_PROJECT, location=GCP_LOCATION)
-        model = genai.GenerativeModel(GCP_MODEL)
+    # Prefer Google Cloud environment if project is set and library is available.
+    # This works for both local ADC (gcloud auth application-default login)
+    # and the service account environment on Cloud Run.
+    if GCP_PROJECT and vertexai is not None:
+        vertexai.init(project=GCP_PROJECT, location=GCP_LOCATION)
+        model = GenerativeModel(GCP_MODEL)
         response = model.generate_content(prompt)
         return response.text
 
     if os.getenv("OPENAI_API_KEY") and OpenAI is not None:
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt,
+        client = OpenAI() # API key is read from OPENAI_API_KEY env var by default
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
         )
-        return response.output_text
+        return response.choices[0].message.content or ""
 
     return json.dumps({
         "source": BASE_URL,
@@ -273,6 +278,7 @@ def run_pipeline() -> Dict[str, Any]:
     raw_uri = upload_to_gcs(payload, "raw")
 
     prompt = build_prompt(articles)
+    print(prompt)
     llm_response = generate_llm_json(prompt, articles)
     result = normalize_llm_output(llm_response)
 

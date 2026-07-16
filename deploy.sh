@@ -10,10 +10,10 @@ set -e
 export PROJECT_ID=$(gcloud config get-value project)
 
 # The Google Cloud region for your resources.
-export REGION="us-central1"
+export REGION="europe-west1"
 
 # The name for your GCS bucket (must be globally unique).
-export GCS_BUCKET_NAME="your-gcs-bucket-name-here"
+export GCS_BUCKET_NAME="regulatory-data-bucket-${PROJECT_ID}"
 
 # The name for your service, repository, and service account.
 export SERVICE_NAME="ai-act-processor"
