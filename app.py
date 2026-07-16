@@ -1,5 +1,6 @@
 import json
 import os
+import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any
 from urllib.parse import urljoin
@@ -23,6 +24,9 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     vertexai = None
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 
@@ -37,8 +41,10 @@ GCP_MODEL = os.getenv("GCP_MODEL", "gemini-1.5-flash-001")
 
 
 def fetch_homepage() -> str:
+    logger.info("Fetching homepage from %s", BASE_URL)
     response = requests.get(BASE_URL, timeout=20)
     response.raise_for_status()
+    logger.info("Successfully fetched homepage.")
     return response.text
 
 
@@ -52,12 +58,14 @@ def fetch_article_text(url: str) -> str:
             if len(text) > 80:
                 return text
         return " ".join(soup.get_text(" ", strip=True).split())
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to fetch article text from %s: %s", url, e)
         return ""
 
 
 def parse_articles(html: str) -> List[Dict[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
+    logger.info("Parsing articles from homepage HTML.")
     items: List[Dict[str, str]] = []
 
     for article in soup.select("article"):
@@ -113,6 +121,7 @@ def parse_articles(html: str) -> List[Dict[str, str]]:
         if item["link"] and item["link"] not in seen:
             seen.add(item["link"])
             unique.append(item)
+    logger.info("Found %d unique articles to process.", len(unique[:20]))
     return unique[:20]
 
 
@@ -131,6 +140,7 @@ def create_raw_payload(articles: List[Dict[str, str]]) -> Dict[str, Any]:
 
 def upload_to_gcs(payload: Dict[str, Any], kind: str) -> str | None:
     if not GCS_BUCKET or storage is None:
+        logger.warning("GCS_BUCKET not configured or google-cloud-storage not installed. Skipping upload.")
         return None
 
     client = storage.Client(project=GCP_PROJECT)
@@ -242,12 +252,14 @@ def generate_llm_json(prompt: str, articles: List[Dict[str, Any]]) -> str:
     # This works for both local ADC (gcloud auth application-default login)
     # and the service account environment on Cloud Run.
     if GCP_PROJECT and vertexai is not None:
+        logger.info("Using Google Vertex AI (Gemini) for analysis.")
         vertexai.init(project=GCP_PROJECT, location=GCP_LOCATION)
         model = GenerativeModel(GCP_MODEL)
         response = model.generate_content(prompt)
         return response.text
 
     if os.getenv("OPENAI_API_KEY") and OpenAI is not None:
+        logger.info("Using OpenAI API for analysis.")
         client = OpenAI() # API key is read from OPENAI_API_KEY env var by default
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -256,6 +268,7 @@ def generate_llm_json(prompt: str, articles: List[Dict[str, Any]]) -> str:
         )
         return response.choices[0].message.content or ""
 
+    logger.warning("No LLM provider configured. Returning fallback JSON.")
     return json.dumps({
         "source": BASE_URL,
         "items": [
@@ -278,10 +291,11 @@ def run_pipeline() -> Dict[str, Any]:
     raw_uri = upload_to_gcs(raw_payload, "raw")
 
     processed_results = []
-    print(f"Found {len(articles)} articles to process.")
+    logger.info("Starting iterative processing of %d articles.", len(articles))
     for article in articles:
-        print(f"-> Processing article: {article.get('title')}")
+        logger.info("-> Processing article: %s", article.get('title'))
         # Build a prompt for each individual article
+        print("article value for prompt", article)
         prompt = build_prompt([article])
         llm_response = generate_llm_json(prompt, [article])
 
@@ -293,8 +307,8 @@ def run_pipeline() -> Dict[str, Any]:
                 'link': article.get('link')
             }
             processed_results.append(processed_article)
-        except json.JSONDecodeError as e:
-            print(f"  [ERROR] Failed to decode LLM output for article: {article.get('link')}. Details: {e}")
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.error("Failed to decode LLM output for article '%s': %s", article.get('link'), e)
             processed_results.append({
                 'error': 'Failed to process article, LLM output was not valid JSON.',
                 'original_article': {'title': article.get('title'), 'link': article.get('link')},
