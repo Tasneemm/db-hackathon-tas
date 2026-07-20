@@ -284,6 +284,26 @@ def generate_llm_json(prompt: str, articles: List[Dict[str, Any]]) -> str:
     })
 
 
+def persist_processed_output(output_payload: Dict[str, Any]) -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    output_path = os.path.join(DATA_DIR, "llm_output.json")
+    with open(output_path, "w", encoding="utf-8") as handle:
+        json.dump(output_payload, handle, indent=2)
+
+    load_processed_output_to_bigquery(output_payload)
+
+
+def load_processed_output_to_bigquery(output_payload: Dict[str, Any]) -> None:
+    logger.info("Loading processed output into BigQuery.")
+    try:
+        from load_to_bq import main as load_to_bigquery_main
+    except ImportError as exc:
+        logger.warning("BigQuery loader could not be imported: %s", exc)
+        return
+
+    load_to_bigquery_main()
+
+
 def run_pipeline() -> Dict[str, Any]:
     html = fetch_homepage()
     articles = parse_articles(html)
@@ -319,6 +339,7 @@ def run_pipeline() -> Dict[str, Any]:
     final_result = {"processed_articles": processed_results}
     output_payload = {"source": BASE_URL, "fetched_at": raw_payload["fetched_at"], **final_result}
     output_uri = upload_to_gcs(output_payload, "output")
+    persist_processed_output(output_payload)
 
     if raw_uri or output_uri:
         final_result["cloud_storage"] = {
