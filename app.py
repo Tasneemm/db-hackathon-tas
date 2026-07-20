@@ -36,8 +36,8 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 GCS_BUCKET = os.getenv("GCS_BUCKET")
 GCS_PREFIX = os.getenv("GCS_PREFIX", "ai-act-data")
 GCP_PROJECT = os.getenv("GCP_PROJECT")
-GCP_LOCATION = os.getenv("GCP_LOCATION", "us-central1")
-GCP_MODEL = os.getenv("GCP_MODEL", "gemini-1.5-flash-001")
+GCP_LOCATION = os.getenv("GCP_LOCATION", "europe-west1")
+GCP_MODEL = os.getenv("GCP_MODEL", "gemini-2.5-flash")
 
 
 def fetch_homepage() -> str:
@@ -297,8 +297,9 @@ def run_pipeline() -> Dict[str, Any]:
         # Build a prompt for each individual article
         print("article value for prompt", article)
         prompt = build_prompt([article])
+        print("Prompt value",prompt)
         llm_response = generate_llm_json(prompt, [article])
-
+        print("LLM value",llm_response)
         try:
             # Normalize and store the structured output
             processed_article = normalize_llm_output(llm_response)
