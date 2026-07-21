@@ -12,6 +12,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the application's code into the container
 COPY app.py .
-
+COPY load_to_bq.py .
 # Define the command to run your script when the container starts
 CMD [ "python", "./app.py" ]

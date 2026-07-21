@@ -32,6 +32,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_URL = "https://artificialintelligenceact.eu/"
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 GCS_BUCKET = os.getenv("GCS_BUCKET")
 GCS_PREFIX = os.getenv("GCS_PREFIX", "ai-act-data")
@@ -285,6 +286,7 @@ def generate_llm_json(prompt: str, articles: List[Dict[str, Any]]) -> str:
 
 
 def persist_processed_output(output_payload: Dict[str, Any]) -> None:
+    logger.info("Loading processed output into BigQuery.i START")
     os.makedirs(DATA_DIR, exist_ok=True)
     output_path = os.path.join(DATA_DIR, "llm_output.json")
     with open(output_path, "w", encoding="utf-8") as handle:
@@ -296,13 +298,12 @@ def persist_processed_output(output_payload: Dict[str, Any]) -> None:
 def load_processed_output_to_bigquery(output_payload: Dict[str, Any]) -> None:
     logger.info("Loading processed output into BigQuery.")
     try:
-        from load_to_bq import main as load_to_bigquery_main
-    except ImportError as exc:
-        logger.warning("BigQuery loader could not be imported: %s", exc)
-        return
-
-    load_to_bigquery_main()
-
+        import importlib
+        load_to_bq = importlib.import_module("load_to_bq")
+        logger.info("Imported load_to_bq module successfully.")
+        load_to_bq.main()
+    except Exception as exc:
+        logger.warning("BigQuery loader could not be invoked: %s", exc)
 
 def run_pipeline() -> Dict[str, Any]:
     html = fetch_homepage()
@@ -312,9 +313,14 @@ def run_pipeline() -> Dict[str, Any]:
 
     processed_results = []
     logger.info("Starting iterative processing of %d articles.", len(articles))
+    i=1
     for article in articles:
+        if i > 2 :
+            break
         logger.info("-> Processing article: %s", article.get('title'))
+        i += 1
         # Build a prompt for each individual article
+        print("Print i  value",i)
         print("article value for prompt", article)
         prompt = build_prompt([article])
         print("Prompt value",prompt)
@@ -337,10 +343,21 @@ def run_pipeline() -> Dict[str, Any]:
             })
 
     final_result = {"processed_articles": processed_results}
+    print('Final result',final_result)
     output_payload = {"source": BASE_URL, "fetched_at": raw_payload["fetched_at"], **final_result}
+    print('Print output payload',output_payload)
     output_uri = upload_to_gcs(output_payload, "output")
-    persist_processed_output(output_payload)
-
+    print('uri',output_uri)
+    #persist_processed_output(output_payload)
+    print('Complete...........')
+    logger.info("Running load_to_bq.py after pipeline completion.")
+    try:
+        import subprocess
+        import sys
+        subprocess.run([sys.executable, "load_to_bq.py"], check=True)
+        logger.info("Completed load_to_bq.py execution.")
+    except Exception as exc:
+        logger.warning("Failed to run load_to_bq.py: %s", exc)
     if raw_uri or output_uri:
         final_result["cloud_storage"] = {
             "raw": raw_uri,
@@ -348,7 +365,6 @@ def run_pipeline() -> Dict[str, Any]:
         }
     return final_result
 
-
 if __name__ == "__main__":
     result = run_pipeline()
-    print(json.dumps(result, indent=2))
+    #print(json.dumps(result, indent=2))

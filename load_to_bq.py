@@ -3,7 +3,11 @@ import os
 import logging
 from typing import List, Dict, Any
 
-from google.cloud import bigquery
+try:
+    from google.cloud import bigquery, storage
+except Exception:  # pragma: no cover - optional dependency
+    bigquery = None
+    storage = None
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -12,6 +16,8 @@ logger = logging.getLogger(__name__)
 GCP_PROJECT = os.getenv("GCP_PROJECT")
 BQ_DATASET = os.getenv("BQ_DATASET", "regulatory_analysis")
 BQ_TABLE = os.getenv("BQ_TABLE", "ai_act_articles")
+GCS_BUCKET = os.getenv("GCS_BUCKET")
+GCS_PREFIX = os.getenv("GCS_PREFIX", "ai-act-data")
 SOURCE_FILE = os.path.join(os.path.dirname(__file__), "data", "llm_output.json")
 
 # Define the BigQuery table schema
@@ -102,6 +108,41 @@ def normalize_article(article: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def load_source_data() -> Dict[str, Any]:
+    """Reads the processed LLM JSON from GCS when configured, otherwise from the local file."""
+    bucket_name = os.getenv("GCS_BUCKET", GCS_BUCKET)
+    prefix = os.getenv("GCS_PREFIX", GCS_PREFIX)
+    project_id = os.getenv("GCP_PROJECT", GCP_PROJECT)
+
+    if bucket_name and storage is not None:
+        logger.info("Reading processed output from GCS bucket %s.", bucket_name)
+        client = storage.Client(project=project_id)
+        bucket = client.bucket(bucket_name)
+
+        output_prefix = f"{prefix}/output/"
+        candidate_blobs = [
+            blob for blob in bucket.list_blobs(prefix=output_prefix)
+            if blob.name.endswith("/llm_output.json")
+        ]
+
+        if candidate_blobs:
+            latest_blob = sorted(candidate_blobs, key=lambda blob: blob.name, reverse=True)[0]
+            content = latest_blob.download_as_bytes().decode("utf-8")
+            return json.loads(content)
+
+        fallback_blob_name = f"{prefix}/output/latest/llm_output.json"
+        fallback_blob = bucket.blob(fallback_blob_name)
+        if fallback_blob.exists():
+            content = fallback_blob.download_as_bytes().decode("utf-8")
+            return json.loads(content)
+
+        logger.warning("No GCS object found at %s. Falling back to local file.", fallback_blob_name)
+
+    logger.info("Reading processed output from local file %s.", SOURCE_FILE)
+    with open(SOURCE_FILE, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
 def normalize_data(raw_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Reads the raw JSON data and normalizes all processed articles."""
     normalized_articles = []
@@ -110,28 +151,20 @@ def normalize_data(raw_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return normalized_articles
 
 
-def create_bigquery_dataset_and_table(client: bigquery.Client, dataset_id: str, table_id: str, schema: List[bigquery.SchemaField]):
+def create_bigquery_dataset_and_table(client: Any, dataset_id: str, table_id: str, schema: List[Any]):
     """Ensures the BigQuery dataset and table exist."""
-    full_dataset_id = f"{client.project}.{dataset_id}"
-    dataset = bigquery.Dataset(full_dataset_id)
-    try:
-        client.get_dataset(dataset_id)
-        logger.info("Dataset %s already exists.", dataset_id)
-    except Exception:
-        logger.info("Creating dataset %s.", dataset_id)
-        client.create_dataset(dataset, timeout=30)
+    dataset_ref = f"{client.project}.{dataset_id}"
+    dataset = bigquery.Dataset(dataset_ref)
+    logger.info("Ensuring dataset %s exists.", dataset_id)
+    client.create_dataset(dataset, timeout=30, exists_ok=True)
 
-    full_table_id = f"{full_dataset_id}.{table_id}"
+    full_table_id = f"{dataset_ref}.{table_id}"
     table = bigquery.Table(full_table_id, schema=schema)
-    try:
-        client.get_table(full_table_id)
-        logger.info("Table %s already exists.", full_table_id)
-    except Exception:
-        logger.info("Creating table %s.", full_table_id)
-        client.create_table(table)
+    logger.info("Ensuring table %s exists.", full_table_id)
+    client.create_table(table, exists_ok=True)
 
 
-def load_data_to_bq(client: bigquery.Client, data: List[Dict[str, Any]], table_id: str):
+def load_data_to_bq(client: Any, data: List[Dict[str, Any]], table_id: str):
     """Loads the normalized data into the specified BigQuery table."""
     if not data:
         logger.warning("No data to load. Skipping BigQuery load.")
@@ -168,13 +201,12 @@ def main():
 
     # 1. Read and normalize the data
     try:
-        with open(SOURCE_FILE, 'r', encoding='utf-8') as f:
-            raw_data = json.load(f)
+        raw_data = load_source_data()
     except FileNotFoundError:
         logger.error("Source file not found: %s", SOURCE_FILE)
         return
     except json.JSONDecodeError:
-        logger.error("Could not decode JSON from source file: %s", SOURCE_FILE)
+        logger.error("Could not decode JSON from source file or GCS object.")
         return
 
     normalized_data = normalize_data(raw_data)
@@ -194,3 +226,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
